@@ -1,0 +1,298 @@
+---
+title: "Tweet Analysis on Grab and Gojek Indonesia using tweetR and twinetverse packages"
+author: "Arga Adyatama"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+    df_print: paged
+---
+
+```{r knitr_init, echo=FALSE, cache=FALSE}
+library(knitr)
+library(rmdformats)
+
+## Global options
+opts_chunk$set(echo=TRUE,
+	             cache=TRUE,
+               prompt=FALSE,
+               tidy=TRUE,
+               comment=NA,
+               message=FALSE,
+               warning=FALSE)
+options(scipen = 100)
+```
+
+# Intro
+
+Tweet analysis is one of the most popular things to do as a data science. Here we will try to do some exploratory and network analysis of tweets about **Grab Indonesia** and **Gojek Indonesia**, the dominant ride hailing services in Indonesia. The data is scraped on `r Sys.Date()`.
+
+# Library and Setup
+
+First, we load the required library.
+
+```{r message=FALSE}
+library(tidyverse)
+library(rtweet)
+library(plotly)
+library(lubridate)
+library(graphTweets)
+library(sigmajs)
+library(twinetverse)
+library(RVerbalExpressions)
+library(textclean)
+```
+
+# Login the Twitter App
+
+To gain access via Twitter API, first you need to make a Twitter App Developer. If you done have one, you can follow this <a href = "https://developer.twitter.com/en/apply-for-access.html"> simple tutorial </a>.
+
+Create a token.
+
+```{r eval=FALSE}
+token <- create_token(
+  app = "app_name",
+  consumer_key = "consumer_key",
+  consumer_secret = "consumer_secret",
+  access_token = "access_token",
+  access_secret = "access_secrete")
+```
+
+# Search Twitter query
+
+We can do a query on various tweets using the `search_tweets()`. Here we fill our query *@GrabID OR @gojekindonesia*. To avoid retrieving a retweet, we can set the parameters `include_rts = F`.
+
+```{r echo=FALSE}
+load(file = "scrape.RData")
+```
+
+
+```{r message=FALSE, eval=FALSE}
+tweet <- search_tweets(q = "@GrabID OR @gojekindonesia", n = 10000, include_rts = F, token = token)
+```
+
+
+```{r message=FALSE}
+tweet
+```
+
+# Exploratory Data Analysis
+
+## Top Tweet by User
+
+First, we want to look at who is the top user by looking at their count of retweet.
+
+```{r}
+tweet %>% 
+  arrange(desc(retweet_count)) %>% 
+  select(screen_name, name, location, text, retweet_count, created_at) %>% 
+  mutate(date = date(created_at)) %>% 
+  slice(1:10) %>% 
+  ggplot(aes(reorder(name, retweet_count), 
+             retweet_count, fill = retweet_count))+
+  geom_col()+
+  coord_flip()+
+  theme_minimal()+
+  scale_fill_viridis_c(guide = F)+
+  labs(title = "Top Tweet related to Grab and Gojek Indonesia",
+       subtitle = "Excluding any retweet text",
+       y = "Retweet Count", x = "Name")
+```
+
+Let's see what they tweeted about.
+
+```{r}
+tweet %>% 
+  arrange(desc(retweet_count)) %>% 
+  select(screen_name, name, location, text, retweet_count, created_at) %>% 
+  mutate(date = date(created_at)) %>% 
+  slice(1:10) %>% 
+  mutate(
+    text = text %>% 
+      replace_url() %>% 
+      replace_html() %>%
+      replace_tag() %>%
+      replace_contraction() %>% 
+      replace_word_elongation() %>% 
+      str_squish()
+  ) %>% 
+  select(screen_name, retweet_count, text)
+```
+
+
+## Where most of the tweets came from
+
+Next, we want to see where most of the tweets came from.
+
+```{r location}
+tweet %>% 
+  mutate(
+    location = case_when(str_detect(location, "Jakarta") ~ "Jakarta",
+                         str_detect(location, "Bandung") ~ "Bandung",
+                         str_detect(location, "62") ~ "Indonesia",
+                         str_detect(location, "Yogyakarta") ~ "Yogyakarta",
+                         TRUE ~ location),
+    location = str_replace(location, "indonesia", "Indonesia"),
+    location = if_else(location == "", "Unknown", location)
+    ) %>% 
+  group_by(location) %>% 
+  summarise(total = n(), retweet = sum(retweet_count)) %>% 
+  arrange(desc(total)) %>% 
+  slice(1:15) %>% 
+  ggplot(aes(reorder(location, total), total, 
+             fill = retweet))+
+  geom_col()+
+  coord_flip()+
+  theme_minimal()+
+  scale_fill_viridis_c(option = "B")+
+  labs(title = "Where Most of the Tweets Came From",
+       x = "Location", y = "Total Tweets")+
+  theme(legend.position = "bottom")
+
+```
+
+The location is retrieved via the profiles in the bio of each twitter accounts. Turns out most of people didn't put their location in the bio, while those who put their location are mostly come from various area of Jakarta and Bandung or only wrote Indonesia.
+
+# Network Analysis
+
+Social media analytics is the process of gathering and analyzing data from social networks such as Facebook, Instagram, and Twitter. It is commonly used by marketers to track online conversations about products and companies. Here, we want to analyze 
+
+## Retweets
+
+Here, we will build a network of retweets. This graph linking users to the users they retweet to fundamentally visualise how information spreads throughout Twitter.
+
+```{r message=FALSE, eval=FALSE}
+tweet_re <- search_tweets(q = "@GrabID OR @gojekindonesia", n = 10000, include_rts = T, token = token)
+
+```
+
+```{r}
+net <- tweet_re %>% 
+  gt_edges(screen_name, retweet_screen_name) %>% 
+  gt_nodes() %>% 
+  gt_collect() 
+
+net$nodes <- net$nodes %>% mutate(color = case_when(nodes == "grabid" ~ "#fca510",
+                                                    nodes == "gojekindonesia" ~ "#d91a1a",
+                                                    TRUE ~ "#1dcaff"))
+
+net$edges <- net$edges %>% mutate(color = case_when(target == "grabid" ~ "#fff2a1",
+                                                    target == "gojekindonesia" ~ "#f75959",
+                                                    TRUE ~ "#1dcaff"))
+
+c(edges, nodes) %<-% net
+nodes <- nodes2sg(nodes)
+edges <- edges2sg(edges)
+```
+
+```{r}
+nodes %>% arrange(desc(size))
+```
+
+
+```{r}
+sigmajs() %>% 
+  sg_nodes(nodes, id, label, size, color) %>% 
+  sg_edges(edges, id, source, target, color) %>% 
+  sg_layout(layout = igraph::layout_components) %>% 
+  sg_settings(
+    minNodeSize = 1,
+    maxNodeSize = 5
+  )
+```
+
+Red point indicate `gojekindonesia` and the red line indicate which account retweeted from `gojekindonesia`, while orange point indicate `GrabID`.
+
+There is a lot of people who retweeted `GrabID`, while for the `gojekindonesia`, not so much. More people talk about `GrabID` than `gojek`. Let's see what people are talking about `GrabID`.
+
+```{r }
+tweet_re %>% 
+  filter(str_detect(text, pattern = "GrabID")) %>% 
+  mutate(
+    retweet_text = retweet_text %>% 
+      replace_url() %>% 
+      replace_html() %>%
+      replace_tag() %>% 
+      replace_contraction() %>% 
+      replace_word_elongation() %>% 
+      str_squish()
+  ) %>% 
+  group_by(retweet_name,retweet_text) %>% 
+  summarise(retweet = sum(retweet_count)) %>% 
+  arrange(desc(retweet)) %>% 
+  select(retweet_name, retweet, retweet_text) %>% 
+  na.omit()
+
+```
+
+The most retweeted text is about a driver of `GrabID` who lost his motorcycle and the user `Pernah Punya Nama` is asking people to help him. The second one is about a scandal related to the user `Iman Sjafei`, who tweeted that `GrabID` stole his marketing campaign ideas. The third one is about a theft done by a driver from `gojekindonesia` to one of the `GrabID` customer, while the fourth one is about a touching story about a customer with her `GrabID` driver. Based on these top 4 tweets, there is a mixed of a bad and good news related to `GrabId`.
+
+How about tweets related to `gojekindonesia`?
+
+```{r}
+tweet_re %>% 
+  filter(str_detect(text, pattern = "gojekindonesia")) %>% 
+  mutate(
+    retweet_text = retweet_text %>% 
+      replace_url() %>% 
+      replace_html() %>%
+      replace_tag() %>% 
+      replace_contraction() %>% 
+      replace_word_elongation() %>% 
+      str_squish()
+  ) %>%
+  group_by(retweet_name,retweet_text) %>% 
+  summarise(retweet = sum(retweet_count)) %>% 
+  arrange(desc(retweet)) %>% 
+  select(retweet_name, retweet, retweet_text) %>% 
+  na.omit()
+
+```
+
+The top 2 tweets is about a touching story related to the `gojekindonesia` drivers, while the next 2 tweets is about a bad experience about the `gojekindonesia`. Both company need to be more concerned about their drivers since social media can really hurt the reputation of the company, not just the driver partner.
+
+Further analysis can be done to see if the user or most of the retweet is bot.
+
+## Hashtags
+
+Here, we will build a network of hastags. Let's see what hastags is used simultaneously.
+
+```{r}
+net <- tweet %>% 
+  gt_edges(screen_name, hashtags) %>% 
+  gt_nodes() %>% 
+  gt_collect()
+
+c(edges, nodes) %<-% net
+
+nodes <- nodes2sg(nodes)
+edges <- edges2sg(edges)
+
+nodes$color <- ifelse(nodes$type == "user", "#0084b4", "orange")
+```
+
+
+```{r}
+sigmajs() %>% 
+  sg_nodes(nodes, id, size, color, label) %>% 
+  sg_edges(edges, id, source, target) %>% 
+  sg_layout(layout = igraph::layout_components) %>% 
+  sg_settings(
+    edgeColor = "default",
+    defaultEdgeColor = "#d3d3d3"
+  ) %>% 
+  sg_neighbours()
+```
+
+Orange point indicate the hastags while the blue one indicate who tweeted the hastags.
+
+The biggest hastags is `#Selalubisa`, which is used alongside `#siapgrab` and `#aplikasiuntuksemua`. These hastags is invented to promote the newest `GrabID` marketing campaign. Meanhwile, `gojekindoesia` didn't have a single big hastags. The biggest one is only the `#gojek` and `#pastiadajalan`. Based on this analysis, people love to share their stories with `GrabID` compared to `gojekindonesia`. This may be inline with the research done by Grab, which stated that they has 70% of market share in four wheels service and 60% market share in two wheels service overall, while Gojek only won in the food delivery service (GoFood) with 72% of this market share.
+
+## Conclusions
+
+To summarise the analysis, here is our conclusions so far:
+
+* People love to share their experience with the driver partner of the ride hailing services, `GrabID` and `gojekindoensia`. 
+* The top retweeted text mostly consists of a touching stories or a scandal, warning or complaints
+* `GrabID` gained more interaction from people compared to `gojekindonesia`.

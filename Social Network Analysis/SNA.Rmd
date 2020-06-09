@@ -1,0 +1,315 @@
+---
+title: "Social Network Analysis on #COVID19"
+author: "Arga Adyatama"
+date: "6/7/2020"
+output:
+  html_document:
+   toc: true
+   toc_float: true
+   toc_depth: 2
+   theme: flatly
+   highlight: zenburn
+   df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width = "100%", fig.align = "center")
+```
+
+# Introduction
+
+This article shows an implementation of graph theory to build a social network analysis. 
+
+> Social Network Analyisis is the process of investigating social structures through the use of networks and graph theory. It characterizes networked structures in terms of nodes (individual actors, people, or things within the network) and the ties, edges, or links (relationships or interactions) that connect them.
+
+# Library and Setup
+
+Below is the list of required package if you wish to reproduce the codes. All codes and dataset is available at <a href = "https://github.com/Argaadya/graph"> my github repo </a>.
+
+```{r message=FALSE}
+options(scipen = 999)
+# for data wrangling. very helpfull for preparing nodes and edges data
+library(tidyverse) 
+library(lubridate)
+
+# for building network and visualization 
+library(tidygraph)
+library(graphlayouts)
+# already included in tidygraph but just fyi
+library(igraph)
+library(ggraph)
+
+# for crawling Twitter data 
+library(rtweet)
+```
+
+# Twitter API
+
+All data is extracted directly from Twitter using Twitter API. To get the access, you need to create a *Twitter Developer Apps* first. The tutorial can be accessed on <a href = "https://developer.twitter.com/en/docs/basics/getting-started"> this website </a>. After you have created a Twitter App, you need to create a token using the `create_token()` function in R. All the key access can be acquired from the Twitter App.
+
+```{r eval=FALSE}
+apikey <- "xxx"
+apisecret <- "xxx"
+acctoken <- "xxx"
+tokensecret <- "xxx"
+
+token <- create_token(app = "xxx",
+                      consumer_key = apikey,
+                      consumer_secret = apisecret,
+                      access_token = acctoken,
+                      access_secret = tokensecret)
+```
+
+After you have created a token, you may start to search for tweets. For this illustration, we want to search all tweets with a hashtag of *#COVID19*.
+
+```{r eval=FALSE}
+tweet_covid <- search_tweets(q = "#COVID19", # Search Query
+                             n = 18000, # Number of extracted tweets
+                             include_rts = T, # Include Retweet?
+                             retryonratelimit = T, # Retry when reach limit?
+                             lang = "en") # Language = English
+
+tweet <- data.frame(lapply(tweet_covid,as.character), stringsAsFactors = F)
+```
+
+# Import Data
+
+I have prepared a dataset that contain tweets related to *#COVID19*. The data is extracted from June 7-9 2020.
+
+```{r}
+tweet <- read.csv("data/tweets.csv")
+
+head(tweet)
+```
+
+# Graph Creation
+
+We will create an activity network that visualize the activity of mention and retweet, which is the form of interaction between tweeter user. To build a network, first we need to build the graph. A graph consists of two main elements: edges and vertices/nodes. Edges is the link or connection between two vertice, or in this case, between to user. The edge can be a directed connection (has arrow to indicate direction) or an undirected connection (no arrow). A graph that contains more information is called a network.
+
+```{r echo=FALSE}
+knitr::include_graphics("asset/graph.png")
+```
+
+Below is the edges that appear based on our dataset. The connection is represented by the column `from` and `to`.
+
+```{r}
+# Cleaning Mention Screen Name Function
+mention_clean <- function(x){
+  if(grepl(",",x) == TRUE){
+    gsub('^.|[^[:alnum:][:blank:]_,?&/\\-]',"",x)
+  } else{
+    x
+  }
+}
+
+# Apply mention_clean function to mentions_screen_name column using sapply()
+edge_nn <- tweet %>% 
+  select(screen_name,is_retweet,mentions_screen_name) %>%
+  mutate(mentions_screen_name = sapply(mentions_screen_name, mention_clean)) %>% 
+  filter(mentions_screen_name != "NA")
+
+# specify interaction type
+edge_nn <- edge_nn %>% 
+  mutate(type = ifelse(is_retweet == "TRUE", "retweet", "mention"))
+
+# seperate value in mention_screen_name by comma
+edge_nn <- edge_nn %>% 
+  select(screen_name,mentions_screen_name,type) %>%
+  separate_rows(mentions_screen_name,sep = ",") %>% 
+  setNames(c("from","to","type")) %>% 
+  count(from,to,type)
+
+edge_nn %>% head()
+```
+
+We might want to inspect how many interaction is a retweet activity or a mention/reply activity.
+
+```{r}
+edge_nn %>% 
+  count(type, name = "frequency")
+```
+
+We already have the edge for our graph. Now we also need to create the vertices which is collected from unique user from the edge.
+
+```{r}
+# create nodes dataframe by unique value in both edges column
+nodes_nn <- data.frame(V = unique(c(edge_nn$from,edge_nn$to)),
+                        stringsAsFactors = F)
+
+tail(nodes_nn)
+```
+
+Now we can build the graph using `graph_from_data_frame()` function from `igraph` package. For this analysis, we will only make an undirected graph (no arrow to indicate direction). 
+
+```{r message=FALSE, warning=FALSE}
+# Build graph data
+network_nn <- graph_from_data_frame(d = edge_nn, # Edge
+                                    vertices = nodes_nn, # Vertice
+                                    directed = F # Is directed Graph?
+                                    ) %>%
+  as_tbl_graph() # Transform graph to table
+
+network_nn
+```
+
+# Graph Metrics
+
+There are several metrics that can be used to analyze the properties of the graph.
+
+## Graph Density
+
+The graph density represent how dense the connection in the graph is. The density is the ratio between the number of existing edge compared to all possible edge.
+
+```{r}
+# graph density
+graph.density(network_nn) 
+```
+
+It is shows that from all possible connection between nodes, there is only 0.006% existing edge in the graph. This indicate that the graph is not very efficient at spreading information, because there is only small fraction of connection built.
+
+## Average Path Length
+
+Average path length shows the mean of distance 
+
+```{r}
+# average path length
+mean_distance(network_nn)
+```
+
+The number indicates that it took about 6-7 steps of travel from a single node to the next node.
+
+## Centrality
+
+Centrality measures the importance of a single node based on its relation with other nodes. There are several centrality measures, including:
+
+* Degree Centrality : Measures how many connection or ties a single node has
+* Betweeness Centrality : Measures the number of times a node lies on the shortest path between other nodes
+* Closeness Centrality : Measures the closeness between a single node with all other nodes
+* Eigen Centrality : Measures a node’s influence based on the number of links it has to other nodes in the network
+
+For more detailed resource regarding graph centrality, you may visit <a href = "https://cambridge-intelligence.com/keylines-faqs-social-network-analysis/"> this website </a>. 
+
+We will also detect communities based on the relation between nodes. A community is a collection of nodes that is highly connected to each other.
+
+```{r message=FALSE, warning=FALSE}
+# create community, calculate centrality and remove loop edge
+set.seed(123)
+network_nn <- network_nn %>% 
+  activate(nodes) %>%
+  mutate(community = group_louvain(), # Build community through clustering algorithm
+         degree = centrality_degree(), # Calculate degree centrality
+         between = centrality_betweenness(), # Calculate betweeness centrality
+         closeness = centrality_closeness(), # Calculate closeness centrality
+         eigen = centrality_eigen()) %>% # Calculate eigen centrality
+  activate(edges) %>% 
+  filter(!edge_is_loop()) # Remove loop edges
+
+network_act_df <- as.data.frame(network_nn %>% activate(nodes))
+
+network_act_df %>% 
+  head()
+```
+
+We will inspect the top 5 user based on each centrality measures.
+
+```{r}
+kp_activity <- data.frame(
+  network_act_df %>% arrange(-degree) %>% select(name) %>% head(),
+  network_act_df %>% arrange(-between) %>% select(name) %>% head(),
+  network_act_df %>% arrange(-closeness) %>% select(name) %>% head(),
+  network_act_df %>% arrange(-eigen) %>% select(name) %>% head()) %>% 
+  setNames(c("Degree","Betweenness","Closeness","Eigen"))
+
+kp_activity 
+```
+
+The top user based on the degree centrality indicates that this user has a lot of interaction, either a retweet or mentions.
+
+We will some of the most retweeted topic from **DrRobDavidson**, who is the executive director of Committee to Protect Medicare.
+
+```{r}
+tweet %>% 
+  filter(mentions_screen_name == "DrRobDavidson") %>% 
+  arrange(desc(retweet_count)) %>% 
+  distinct(text) %>% 
+  pull(text)
+```
+
+We will also check the top tweets based on number of replies from **ANI** (Asian News International), which mostly cover news about situations in India.
+
+```{r}
+tweet %>% 
+  filter(mentions_screen_name == "ANI") %>% 
+  arrange(desc(reply_count)) %>% 
+  distinct(text) %>% 
+  pull(text) %>% 
+  head()
+```
+
+# Network Visualization
+
+We have several chart ot visualize the network, but the popular one is the chord diagram and the classic network. 
+
+```{r warning=FALSE}
+important_person <- network_act_df %>% 
+  filter(community %in% 1:5) %>% 
+  select(-community) %>% 
+  pivot_longer(-name, names_to = "measures", values_to = "values") %>% 
+  group_by(measures) %>% 
+  arrange(desc(values)) %>% 
+  slice(1:6) %>% 
+  ungroup() %>% 
+  distinct(name) %>% 
+  pull(name)
+
+network_nn %>%
+  activate(nodes) %>%
+  mutate(ids = row_number()) %>%
+  filter(community %in% 1:3) %>% arrange(community,ids) %>%
+  mutate(node_label = ifelse(name %in% important_person, name, "")) %>%
+  mutate(node_size = ifelse(name %in% important_person, degree, 0)) %>%
+  ggraph(layout = "linear", circular = T) +
+  geom_edge_arc(alpha = 0.05, aes(col = as.factor(type), edge_width = n*0.5)) +
+  geom_node_label(aes(label = node_label, size = node_size), repel = T,
+                 show.legend = F, fontface = "bold", label.size = 0,
+                 segment.colour="slateblue", fill = "#ffffff66") +
+  coord_fixed() + 
+  labs(title = "Twitter Activity Network #COVID19",
+       subtitle = "Retweets and mention between 3 top communities") +
+  theme_graph() + 
+  guides(edge_width = F,
+         edge_colour = guide_legend(title = "Tweet Type",
+                                    override.aes = list(edge_alpha = 1))) +
+  theme(legend.position = "bottom", 
+        plot.title = element_text(size = rel(2)),
+        plot.subtitle = element_text(size = rel(1)),
+        legend.text = element_text(size = rel(1)))
+```
+
+The chord diagram shows the relation of an entity with other entities with a single line that indicate the connection. The chord diagram for the 3 separate communities shows that most of the interaction is a retweet activity (blue line). 
+
+We can also visualize the network with graph. We will try to visualize the top 5 communities since visualizing all network will take too much time to process.
+
+```{r}
+set.seed(13)
+network_nn %>%
+  activate(nodes) %>%
+  mutate(ids = row_number(),
+         community = as.character(community)) %>%
+  filter(community %in% 1:5) %>% 
+  arrange(community,ids) %>% 
+  mutate(node_label = ifelse(name %in% important_person, name, "")) %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(alpha = 0.3, aes(color = type), arrow = arrow(length = unit(1.5, "mm"))) +
+  geom_node_point(aes(size = degree, fill = community), shape = 21, alpha = 0.7, color = "grey") +
+  geom_node_label(aes(label = node_label), repel = T, alpha = 0.5) +
+  scale_fill_brewer(palette = "Dark2") +
+  guides(size = F) +
+  labs(title = "Top 5 Community of #COVID19", 
+       color = "Interaction", fill = "Community") +
+  theme_void() +
+  theme(legend.position = "top")
+
+```
+
+We can clearly see that most of the interaction is a retweet to the big nodes inside each communities. Some important user, including the big nodes (with high degree centrality) and other important user such as the user with high betweness (act as a bridge between nodes) is highlighted by mentioning their screen name.
