@@ -300,10 +300,10 @@ network_nn %>%
   arrange(community,ids) %>% 
   mutate(node_label = ifelse(name %in% important_person, name, "")) %>%
   ggraph(layout = "fr") +
-  geom_edge_link(alpha = 0.3, aes(color = type), arrow = arrow(length = unit(1.5, "mm"))) +
-  geom_node_point(aes(size = degree, fill = community), shape = 21, alpha = 0.7, color = "grey") +
+  geom_edge_link(alpha = 0.3, aes(color = type)) +
+  geom_node_point(aes(size = degree, fill = community), shape = 21, alpha = 0.7, color = "grey30") +
   geom_node_label(aes(label = node_label), repel = T, alpha = 0.5) +
-  scale_fill_brewer(palette = "Dark2") +
+  scale_fill_manual(values = c("firebrick", "blue4", "magenta", "green3", "orange")) +
   guides(size = F) +
   labs(title = "Top 5 Community of #COVID19", 
        color = "Interaction", fill = "Community") +
